@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Minecraft LAN Tunnel</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #1e1e2e;
+            color: #cdd6f4;
+            margin: 0;
+            padding: 20px;
+            user-select: none;
+        }
+        .container {
+            max-width: 450px;
+            margin: 0 auto;
+            background: #181825;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }
+        h2 { text-align: center; color: #a6e3a1; margin-top: 0; }
+        .ip-card {
+            background: #313244;
+            padding: 12px;
+            border-radius: 8px;
+            text-align: center;
+            margin-bottom: 20px;
+            border: 1px solid #45475a;
+        }
+        .ip-val { font-size: 1.2em; font-weight: bold; color: #89b4fa; }
+        .btn-copy {
+            background: #45475a; border: none; color: white;
+            padding: 4px 8px; border-radius: 4px; cursor: pointer; margin-left: 8px;
+        }
+        .btn-copy:hover { background: #585b70; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: 500; }
+        input[type="text"], select {
+            width: 100%; padding: 10px; border-radius: 6px;
+            border: 1px solid #45475a; background: #313244; color: white;
+            box-sizing: border-box; font-size: 1em;
+        }
+        .btn-main {
+            width: 100%; padding: 12px; border: none; border-radius: 6px;
+            font-size: 1.1em; font-weight: bold; cursor: pointer;
+            transition: 0.2s;
+        }
+        .btn-start { background: #a6e3a1; color: #11111b; }
+        .btn-start:hover { background: #94e2d5; }
+        .btn-stop { background: #f38ba8; color: #11111b; }
+        .logs {
+            background: #11111b; border: 1px solid #313244;
+            height: 120px; border-radius: 6px; padding: 8px;
+            font-family: monospace; font-size: 0.85em; overflow-y: auto;
+            margin-top: 15px; color: #a6adc8;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>🎮 Minecraft Tunnel</h2>
+        
+        <div class="ip-card">
+            <div>Ваш публичный IP:</div>
+            <span id="public-ip" class="ip-val">Загрузка...</span>
+            <button class="btn-copy" onclick="copyIP()">📋</button>
+        </div>
+
+        <div class="form-group">
+            <label>Режим работы:</label>
+            <select id="mode">
+                <option value="host">Хост (Я создаю сервер -> 10.0.0.1)</option>
+                <option value="client">Клиент (Я подключаюсь -> 10.0.0.2)</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label>Публичный IP друга:</label>
+            <input type="text" id="peer-ip" placeholder="Например: 185.12.34.56">
+        </div>
+
+        <button id="action-btn" class="btn-main btn-start" onclick="toggleTunnel()">🚀 Запустить туннель</button>
+
+        <div class="logs" id="logs"></div>
+    </div>
+
+    <script>
+        let isRunning = false;
+
+        function updateStatus() {
+            fetch('/api/status')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('public-ip').innerText = data.public_ip;
+                    isRunning = data.running;
+
+                    const btn = document.getElementById('action-btn');
+                    if (isRunning) {
+                        btn.innerText = "🛑 Остановить туннель (" + data.virtual_ip + ")";
+                        btn.className = "btn-main btn-stop";
+                    } else {
+                        btn.innerText = "🚀 Запустить туннель";
+                        btn.className = "btn-main btn-start";
+                    }
+
+                    const logsDiv = document.getElementById('logs');
+                    logsDiv.innerHTML = (data.logs || []).join('<br>');
+                    logsDiv.scrollTop = logsDiv.scrollHeight;
+                });
+        }
+
+        function toggleTunnel() {
+            if (isRunning) {
+                fetch('/api/stop', {method: 'POST'}).then(() => updateStatus());
+            } else {
+                const mode = document.getElementById('mode').value;
+                const peerIP = document.getElementById('peer-ip').value.trim();
+                if (!peerIP) {
+                    alert('Введите IP-адрес друга!');
+                    return;
+                }
+                fetch('/api/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'json'},
+                    body: JSON.stringify({mode: mode, peer_ip: peerIP})
+                }).then(() => updateStatus());
+            }
+        }
+
+        function copyIP() {
+            const ip = document.getElementById('public-ip').innerText;
+            navigator.clipboard.writeText(ip);
+            alert('IP скопирован в буфер обмена!');
+        }
+
+        setInterval(updateStatus, 1000);
+        updateStatus();
+    </script>
+</body>
+</html>
