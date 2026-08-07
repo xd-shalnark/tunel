@@ -37,11 +37,12 @@
         .btn-copy:hover { background: #585b70; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; font-weight: 500; }
-        input[type="text"], select {
+        input[type="text"], input[type="password"], select {
             width: 100%; padding: 10px; border-radius: 6px;
             border: 1px solid #45475a; background: #313244; color: white;
             box-sizing: border-box; font-size: 1em;
         }
+        .hint { font-size: 0.8em; color: #7f849c; margin-top: 4px; }
         .btn-main {
             width: 100%; padding: 12px; border: none; border-radius: 6px;
             font-size: 1.1em; font-weight: bold; cursor: pointer;
@@ -50,6 +51,12 @@
         .btn-start { background: #a6e3a1; color: #11111b; }
         .btn-start:hover { background: #94e2d5; }
         .btn-stop { background: #f38ba8; color: #11111b; }
+        .btn-quit {
+            width: 100%; padding: 8px; border: none; border-radius: 6px;
+            font-size: 0.9em; cursor: pointer; margin-top: 10px;
+            background: transparent; color: #f38ba8; border: 1px solid #f38ba8;
+        }
+        .btn-quit:hover { background: #302733; }
         .logs {
             background: #11111b; border: 1px solid #313244;
             height: 120px; border-radius: 6px; padding: 8px;
@@ -61,7 +68,7 @@
 <body>
     <div class="container">
         <h2>🎮 Minecraft Tunnel</h2>
-        
+
         <div class="ip-card">
             <div>Ваш публичный IP:</div>
             <span id="public-ip" class="ip-val">Загрузка...</span>
@@ -81,7 +88,14 @@
             <input type="text" id="peer-ip" placeholder="Например: 185.12.34.56">
         </div>
 
+        <div class="form-group">
+            <label>Код комнаты (пароль):</label>
+            <input type="password" id="room-code" placeholder="Придумайте и сообщите другу">
+            <div class="hint">Одинаковый у обоих — трафик шифруется этим кодом (AES-GCM).</div>
+        </div>
+
         <button id="action-btn" class="btn-main btn-start" onclick="toggleTunnel()">🚀 Запустить туннель</button>
+        <button class="btn-quit" onclick="quitApp()">Закрыть приложение</button>
 
         <div class="logs" id="logs"></div>
     </div>
@@ -108,25 +122,47 @@
                     const logsDiv = document.getElementById('logs');
                     logsDiv.innerHTML = (data.logs || []).join('<br>');
                     logsDiv.scrollTop = logsDiv.scrollHeight;
+                })
+                .catch(() => {
+                    document.getElementById('public-ip').innerText = "Нет связи с приложением";
                 });
         }
 
         function toggleTunnel() {
             if (isRunning) {
                 fetch('/api/stop', {method: 'POST'}).then(() => updateStatus());
-            } else {
-                const mode = document.getElementById('mode').value;
-                const peerIP = document.getElementById('peer-ip').value.trim();
-                if (!peerIP) {
-                    alert('Введите IP-адрес друга!');
-                    return;
-                }
-                fetch('/api/start', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'json'},
-                    body: JSON.stringify({mode: mode, peer_ip: peerIP})
-                }).then(() => updateStatus());
+                return;
             }
+
+            const mode = document.getElementById('mode').value;
+            const peerIP = document.getElementById('peer-ip').value.trim();
+            const roomCode = document.getElementById('room-code').value;
+
+            if (!peerIP) {
+                alert('Введите IP-адрес друга!');
+                return;
+            }
+            if (!roomCode) {
+                alert('Введите код комнаты — без него туннель не будет зашифрован!');
+                return;
+            }
+
+            fetch('/api/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({mode: mode, peer_ip: peerIP, room_code: roomCode})
+            })
+                .then(r => {
+                    if (!r.ok) return r.text().then(t => { throw new Error(t); });
+                    return r;
+                })
+                .then(() => updateStatus())
+                .catch(err => alert('Не удалось запустить туннель: ' + err.message));
+        }
+
+        function quitApp() { 
+            if (!confirm('Закрыть MCTunnel? Активный туннель будет остановлен.')) return;
+            fetch('/api/quit', {method: 'POST'}).catch(() => {});
         }
 
         function copyIP() {
