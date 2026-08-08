@@ -25,6 +25,7 @@ import (
 
 	"github.com/songgao/water"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 // Вшиваем инсталлятор драйвера прямо внутри .exe
@@ -115,23 +116,48 @@ func main() {
 	http.Serve(listener, nil)
 }
 
-// Запрос внешнего IP через публичный API
+// Несколько сервисов на случай, если один из них недоступен в конкретной сети
+var publicIPServices = []string{
+	"https://api.ipify.org",
+	"https://ifconfig.me/ip",
+	"https://icanhazip.com",
+}
+
+// Запрос внешнего IP через публичный API — с повторами и резервными сервисами,
+// т.к. одиночный запрос может не пройти из-за антивируса/временного сбоя сети
 func (tm *TunnelManager) fetchPublicIP() {
 	client := http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("https://api.ipify.org")
-	if err == nil {
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err == nil {
-			tm.mu.Lock()
-			tm.publicIP = string(body)
-			tm.mu.Unlock()
-			return
+
+	for attempt := 0; ; attempt++ {
+		for _, url := range publicIPServices {
+			resp, err := client.Get(url)
+			if err != nil {
+				continue
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			ip := strings.TrimSpace(string(body))
+			if err == nil && net.ParseIP(ip) != nil {
+				tm.mu.Lock()
+				tm.publicIP = ip
+				tm.mu.Unlock()
+				return
+			}
 		}
+
+		tm.mu.Lock()
+		if tm.publicIP == "Определяем..." || tm.publicIP == "" {
+			tm.publicIP = "Не удалось определить (повторная попытка...)"
+		}
+		tm.mu.Unlock()
+
+		if attempt >= 4 {
+			// Дальше пробуем гораздо реже, чтобы не спамить запросами впустую
+			time.Sleep(30 * time.Second)
+			continue
+		}
+		time.Sleep(3 * time.Second)
 	}
-	tm.mu.Lock()
-	tm.publicIP = "Не удалось определить"
-	tm.mu.Unlock()
 }
 
 func (tm *TunnelManager) addLog(msg string) {
@@ -179,7 +205,8 @@ func (tm *TunnelManager) Start(mode, peerIP, roomCode string) error {
 
 	tm.addLog("Проверка и установка TAP-драйвера...")
 	if err := ensureTAPDriver(); err != nil {
-		tm.addLog(fmt.Sprintf("Предупреждение: установка TAP-драйвера завершилась с ошибкой: %v", err))
+		tm.addLog(fmt.Sprintf("ОШИБКА установки TAP-драйвера: %v", err))
+		return fmt.Errorf("не удалось установить TAP-драйвер: %w", err)
 	}
 
 	virtualIP := "10.0.0.1"
@@ -332,7 +359,41 @@ func (tm *TunnelManager) addLogLocked(msg string) {
 }
 
 // Вспомогательные функции
+
+// Класс сетевых адаптеров в реестре Windows
+const networkAdaptersClassKey = `SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}`
+
+// Проверяет, действительно ли TAP-адаптер с нужным ComponentId зарегистрирован в системе
+func isTAPDriverInstalled() bool {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, networkAdaptersClassKey, registry.READ)
+	if err != nil {
+		return false
+	}
+	defer k.Close()
+
+	subkeys, err := k.ReadSubKeyNames(-1)
+	if err != nil {
+		return false
+	}
+	for _, sub := range subkeys {
+		sk, err := registry.OpenKey(registry.LOCAL_MACHINE, networkAdaptersClassKey+`\`+sub, registry.READ)
+		if err != nil {
+			continue
+		}
+		val, _, err := sk.GetStringValue("ComponentId")
+		sk.Close()
+		if err == nil && strings.EqualFold(val, "tap0901") {
+			return true
+		}
+	}
+	return false
+}
+
 func ensureTAPDriver() error {
+	if isTAPDriverInstalled() {
+		return nil // уже установлен, повторная установка не нужна
+	}
+
 	tempDir := os.TempDir()
 	installerPath := filepath.Join(tempDir, "tap-installer-tmp.exe")
 	if err := os.WriteFile(installerPath, tapInstallerBytes, 0755); err != nil {
@@ -340,11 +401,29 @@ func ensureTAPDriver() error {
 	}
 	defer os.Remove(installerPath)
 
-	cmd := exec.Command(installerPath, "/S")
-	if err := cmd.Run(); err != nil {
-		return err
+	// Попытка №1: тихая установка
+	out, err := exec.Command(installerPath, "/S").CombinedOutput()
+	if err != nil {
+		manager.addLog(fmt.Sprintf("Тихая установка драйвера завершилась с ошибкой: %v %s", err, strings.TrimSpace(string(out))))
+	}
+	time.Sleep(3 * time.Second)
+
+	if isTAPDriverInstalled() {
+		return nil
+	}
+
+	// Попытка №2: тихая установка не сработала (антивирус/защитник могли её заблокировать) —
+	// запускаем мастер установки в обычном видимом режиме, чтобы пользователь прошёл шаги сам
+	manager.addLog("Тихая установка не удалась — открываю окно установки TAP-драйвера, пожалуйста, завершите её вручную")
+	visibleCmd := exec.Command(installerPath)
+	if err := visibleCmd.Start(); err == nil {
+		_ = visibleCmd.Wait()
 	}
 	time.Sleep(2 * time.Second)
+
+	if !isTAPDriverInstalled() {
+		return fmt.Errorf("драйвер TAP так и не появился в системе — возможно, требуется перезагрузка компьютера, либо антивирус блокирует установку неподписанного драйвера")
+	}
 	return nil
 }
 
